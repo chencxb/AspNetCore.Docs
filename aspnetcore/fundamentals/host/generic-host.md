@@ -1,21 +1,22 @@
 ---
 title: .NET Generic Host in ASP.NET Core
-author: rick-anderson
+author: tdykstra
 description: Use .NET Core Generic Host in ASP.NET Core apps.  Generic Host is responsible for app startup and lifetime management.
 monikerRange: '>= aspnetcore-3.1'
 ms.author: riande
 ms.custom: mvc
-ms.date: 4/17/2020
-no-loc: [Home, Privacy, Kestrel, appsettings.json, "ASP.NET Core Identity", cookie, Cookie, Blazor, "Blazor Server", "Blazor WebAssembly", "Identity", "Let's Encrypt", Razor, SignalR]
+ms.date: 11/09/2021
 uid: fundamentals/host/generic-host
 ---
 # .NET Generic Host in ASP.NET Core
 
 :::moniker range=">= aspnetcore-6.0"
 
-The ASP.NET Core templates create a .NET Core Generic Host (<xref:Microsoft.Extensions.Hosting.HostBuilder>).
+This article provides information on using the .NET Generic Host in ASP.NET Core.
 
-This article provides information on using .NET Generic Host in ASP.NET Core. For information on using .NET Generic Host in console apps, see [.NET Generic Host](/dotnet/core/extensions/generic-host).
+The ASP.NET Core templates create a <xref:Microsoft.AspNetCore.Builder.WebApplicationBuilder> and <xref:Microsoft.AspNetCore.Builder.WebApplication>, which provide a streamlined way to configure and run web applications without a `Startup` class. For more information on `WebApplicationBuilder` and `WebApplication`, see <xref:migration/50-to-60#new-hosting-model>.
+
+For information on using the .NET Generic Host in console apps, see [.NET Generic Host](/dotnet/core/extensions/generic-host).
 
 ## Host definition
 
@@ -28,65 +29,17 @@ A *host* is an object that encapsulates an app's resources, such as:
 
 When a host starts, it calls <xref:Microsoft.Extensions.Hosting.IHostedService.StartAsync%2A?displayProperty=nameWithType> on each implementation of <xref:Microsoft.Extensions.Hosting.IHostedService> registered in the service container's collection of hosted services. In a web app, one of the `IHostedService` implementations is a web service that starts an [HTTP server implementation](xref:fundamentals/index#servers).
 
-The main reason for including all of the app's interdependent resources in one object is lifetime management: control over app startup and graceful shutdown.
+Including all of the app's interdependent resources in one object enables control over app startup and graceful shutdown.
 
 ## Set up a host
 
-The host is typically configured, built, and run by code in the `Program` class. The `Main` method:
+The host is typically configured, built, and run by code in the `Program.cs`. The following code creates a host with an `IHostedService` implementation added to the DI container:
 
-* Calls a `CreateHostBuilder` method to create and configure a builder object.
-* Calls `Build` and `Run` methods on the builder object.
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Program.cs" id="snippet_Host":::
 
-The ASP.NET Core web templates generate the following code to create a host:
+For an HTTP workload, call <xref:Microsoft.Extensions.Hosting.GenericHostBuilderExtensions.ConfigureWebHostDefaults%2A> after <xref:Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder%2A>:
 
-```csharp
-public class Program
-{
-    public static void Main(string[] args)
-    {
-        CreateHostBuilder(args).Build().Run();
-    }
-
-    public static IHostBuilder CreateHostBuilder(string[] args) =>
-        Host.CreateDefaultBuilder(args)
-            .ConfigureWebHostDefaults(webBuilder =>
-            {
-                webBuilder.UseStartup<Startup>();
-            });
-}
-```
-
-The following code creates a non-HTTP workload with an `IHostedService` implementation added to the DI container.
-
-```csharp
-public class Program
-{
-    public static void Main(string[] args)
-    {
-        CreateHostBuilder(args).Build().Run();
-    }
-
-    public static IHostBuilder CreateHostBuilder(string[] args) =>
-        Host.CreateDefaultBuilder(args)
-            .ConfigureServices((hostContext, services) =>
-            {
-               services.AddHostedService<Worker>();
-            });
-}
-```
-
-For an HTTP workload, the `Main` method is the same but `CreateHostBuilder` calls `ConfigureWebHostDefaults`:
-
-```csharp
-public static IHostBuilder CreateHostBuilder(string[] args) =>
-    Host.CreateDefaultBuilder(args)
-        .ConfigureWebHostDefaults(webBuilder =>
-        {
-            webBuilder.UseStartup<Startup>();
-        });
-```
-
-If the app uses Entity Framework Core, don't change the name or signature of the `CreateHostBuilder` method. The [Entity Framework Core tools](/ef/core/miscellaneous/cli/) expect to find a `CreateHostBuilder` method that configures the host without running the app. For more information, see [Design-time DbContext Creation](/ef/core/miscellaneous/cli/dbcontext-creation).
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_HostConfigureWebHostDefaults":::
 
 ## Default builder settings
 
@@ -97,8 +50,8 @@ The <xref:Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder%2A> method:
   * Environment variables prefixed with `DOTNET_`.
   * Command-line arguments.
 * Loads app configuration from:
-  * *appsettings.json*.
-  * *appsettings.{Environment}.json*.
+  * `appsettings.json`.
+  * `appsettings.{Environment}.json`.
   * [User secrets](xref:security/app-secrets) when the app runs in the `Development` environment.
   * Environment variables.
   * Command-line arguments.
@@ -131,11 +84,17 @@ For more information on framework-provided services, see <xref:fundamentals/depe
 
 ## IHostApplicationLifetime
 
-Inject the <xref:Microsoft.Extensions.Hosting.IHostApplicationLifetime> (formerly `IApplicationLifetime`) service into any class to handle post-startup and graceful shutdown tasks. Three properties on the interface are cancellation tokens used to register app start and app stop event handler methods. The interface also includes a `StopApplication` method.
+Inject the <xref:Microsoft.Extensions.Hosting.IHostApplicationLifetime> (formerly `IApplicationLifetime`) service into any class to handle post-startup and graceful shutdown tasks. Three properties on the interface are cancellation tokens used to register app start and app stop event handler methods. The interface also includes a `StopApplication` method, which allows apps to request a graceful shutdown.
 
-The following example is an `IHostedService` implementation that registers `IHostApplicationLifetime` events:
+When performing a graceful shutdown, the host:
 
-:::code language="csharp" source="generic-host/samples-snapshot/3.x/LifetimeEventsHostedService.cs" id="snippet_LifetimeEvents":::
+* Triggers the <xref:Microsoft.Extensions.Hosting.IHostApplicationLifetime.ApplicationStopping%2A> event handlers, which allows the app to run logic before the shutdown process begins.
+* Stops the server, which disables new connections. The server waits for requests on existing connections to complete, for as long as the [shutdown timeout](#shutdowntimeout) allows. The server sends the connection close header for further requests on existing connections.
+* Triggers the <xref:Microsoft.Extensions.Hosting.IHostApplicationLifetime.ApplicationStopped%2A> event handlers, which allows the app to run logic after the application has shutdown.
+
+The following example is an `IHostedService` implementation that registers `IHostApplicationLifetime` event handlers:
+
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Services/HostApplicationLifetimeEventsHostedService.cs" id="snippet_Class":::
 
 ## IHostLifetime
 
@@ -168,7 +127,7 @@ The environment variable provider with prefix `DOTNET_` and command-line argumen
 
 The following example creates host configuration:
 
-:::code language="csharp" source="generic-host/samples-snapshot/3.x/Program.cs" id="snippet_HostConfig":::
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_ConfigureHostConfiguration":::
 
 ## App configuration
 
@@ -206,11 +165,7 @@ The <xref:Microsoft.Extensions.Hosting.IHostEnvironment.ContentRootPath%2A?displ
 
 To set this value, use the environment variable or call `UseContentRoot` on `IHostBuilder`:
 
-```csharp
-Host.CreateDefaultBuilder(args)
-    .UseContentRoot("c:\\content-root")
-    //...
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_UseContentRoot":::
 
 For more information, see:
 
@@ -228,11 +183,7 @@ The <xref:Microsoft.Extensions.Hosting.IHostEnvironment.EnvironmentName%2A?displ
 
 To set this value, use the environment variable or call `UseEnvironment` on `IHostBuilder`:
 
-```csharp
-Host.CreateDefaultBuilder(args)
-    .UseEnvironment("Development")
-    //...
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_UseEnvironment":::
 
 ### ShutdownTimeout
 
@@ -250,11 +201,11 @@ If the timeout period expires before all of the hosted services stop, any remain
 
 To set this value, use the environment variable or configure `HostOptions`. The following example sets the timeout to 20 seconds:
 
-:::code language="csharp" source="generic-host/samples-snapshot/3.x/Program.cs" id="snippet_HostOptions":::
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_ShutdownTimeout":::
 
 ### Disable app configuration reload on change
 
-By [default](xref:fundamentals/configuration/index#default), *appsettings.json* and *appsettings.{Environment}.json* are reloaded when the file changes. To disable this reload behavior in ASP.NET Core 5.0 or later, set the `hostBuilder:reloadConfigOnChange` key to `false`.
+By [default](xref:fundamentals/configuration/index#default), `appsettings.json` and `appsettings.{Environment}.json` are reloaded when the file changes. To disable this reload behavior in ASP.NET Core 5.0 or later, set the `hostBuilder:reloadConfigOnChange` key to `false`.
 
 **Key**: `hostBuilder:reloadConfigOnChange`  
 **Type**: `bool` (`true` or `false`)  
@@ -271,15 +222,7 @@ Some host settings apply only to HTTP workloads. By default, environment variabl
 
 Extension methods on `IWebHostBuilder` are available for these settings. Code samples that show how to call the extension methods assume `webBuilder` is an instance of `IWebHostBuilder`, as in the following example:
 
-```csharp
-public static IHostBuilder CreateHostBuilder(string[] args) =>
-    Host.CreateDefaultBuilder(args)
-        .ConfigureWebHostDefaults(webBuilder =>
-        {
-            webBuilder.CaptureStartupErrors(true);
-            webBuilder.UseStartup<Startup>();
-        });
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_ConfigureWebHostDefaults":::
 
 ### CaptureStartupErrors
 
@@ -292,9 +235,7 @@ When `false`, errors during startup result in the host exiting. When `true`, the
 
 To set this value, use configuration or call `CaptureStartupErrors`:
 
-```csharp
-webBuilder.CaptureStartupErrors(true);
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderCaptureStartupErrors":::
 
 ### DetailedErrors
 
@@ -307,9 +248,7 @@ When enabled, or when the environment is `Development`, the app captures detaile
 
 To set this value, use configuration or call `UseSetting`:
 
-```csharp
-webBuilder.UseSetting(WebHostDefaults.DetailedErrorsKey, "true");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderDetailedErrors":::
 
 ### HostingStartupAssemblies
 
@@ -322,9 +261,7 @@ A semicolon-delimited string of hosting startup assemblies to load on startup. A
 
 To set this value, use configuration or call `UseSetting`:
 
-```csharp
-webBuilder.UseSetting(WebHostDefaults.HostingStartupAssembliesKey, "assembly1;assembly2");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderHostingStartupAssemblies":::
 
 ### HostingStartupExcludeAssemblies
 
@@ -337,9 +274,7 @@ A semicolon-delimited string of hosting startup assemblies to exclude on startup
 
 To set this value, use configuration or call `UseSetting`:
 
-```csharp
-webBuilder.UseSetting(WebHostDefaults.HostingStartupExcludeAssembliesKey, "assembly1;assembly2");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderHostingStartupExcludeAssemblies":::
 
 ### HTTPS_Port
 
@@ -352,9 +287,7 @@ The HTTPS redirect port. Used in [enforcing HTTPS](xref:security/enforcing-ssl).
 
 To set this value, use configuration or call `UseSetting`:
 
-```csharp
-webBuilder.UseSetting("https_port", "8080");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderHttpsPort":::
 
 ### PreferHostingUrls
 
@@ -367,9 +300,7 @@ Indicates whether the host should listen on the URLs configured with the `IWebHo
 
 To set this value, use the environment variable or call `PreferHostingUrls`:
 
-```csharp
-webBuilder.PreferHostingUrls(false);
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderPreferHostingUrls":::
 
 ### PreventHostingStartup
 
@@ -382,9 +313,7 @@ Prevents the automatic loading of hosting startup assemblies, including hosting 
 
 To set this value, use the environment variable or call `UseSetting` :
 
-```csharp
-webBuilder.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderPreventHostingStartup":::
 
 ### StartupAssembly
 
@@ -397,13 +326,8 @@ The assembly to search for the `Startup` class.
 
 To set this value, use the environment variable or call `UseStartup`. `UseStartup` can take an assembly name (`string`) or a type (`TStartup`). If multiple `UseStartup` methods are called, the last one takes precedence.
 
-```csharp
-webBuilder.UseStartup("StartupAssemblyName");
-```
-
-```csharp
-webBuilder.UseStartup<Startup>();
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderUseStartup":::
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderUseStartupGeneric":::
 
 ### SuppressStatusMessages
 
@@ -416,9 +340,7 @@ When enabled, suppresses hosting startup status messages.
 
 To set this value, use configuration or call `UseSetting`:
 
-```csharp
-webBuilder.UseSetting(WebHostDefaults.SuppressStatusMessagesKey, "true");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderSuppressStatusMessages":::
 
 ### URLs
 
@@ -431,9 +353,7 @@ A semicolon-delimited list of IP addresses or host addresses with ports and prot
 
 To set this value, use the environment variable or call `UseUrls`:
 
-```csharp
-webBuilder.UseUrls("http://*:5000;http://localhost:5001;https://hostname:5002");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderUseUrls":::
 
 Kestrel has its own endpoint configuration API. For more information, see <xref:fundamentals/servers/kestrel/endpoints>.
 
@@ -448,9 +368,7 @@ The [IWebHostEnvironment.WebRootPath](xref:Microsoft.AspNetCore.Hosting.IWebHost
 
 To set this value, use the environment variable or call `UseWebRoot` on `IWebHostBuilder`:
 
-```csharp
-webBuilder.UseWebRoot("public");
-```
+:::code language="csharp" source="generic-host/samples/6.x/GenericHostSample/Snippets/Program.cs" id="snippet_WebHostBuilderUseWebRoot":::
 
 For more information, see:
 
@@ -494,36 +412,6 @@ Call methods on the built <xref:Microsoft.Extensions.Hosting.IHost> implementati
 ### WaitForShutdownAsync
 
 <xref:Microsoft.Extensions.Hosting.HostingAbstractionsHostExtensions.WaitForShutdownAsync%2A> returns a <xref:System.Threading.Tasks.Task> that completes when shutdown is triggered via the given token and calls <xref:Microsoft.Extensions.Hosting.IHost.StopAsync%2A>.
-
-### External control
-
-Direct control of the host lifetime can be achieved using methods that can be called externally:
-
-```csharp
-public class Program
-{
-    private IHost _host;
-
-    public Program()
-    {
-        _host = new HostBuilder()
-            .Build();
-    }
-
-    public async Task StartAsync()
-    {
-        _host.StartAsync();
-    }
-
-    public async Task StopAsync()
-    {
-        using (_host)
-        {
-            await _host.StopAsync(TimeSpan.FromSeconds(5));
-        }
-    }
-}
-```
 
 :::moniker-end
 
@@ -613,8 +501,8 @@ The <xref:Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder%2A> method:
   * Environment variables prefixed with `DOTNET_`.
   * Command-line arguments.
 * Loads app configuration from:
-  * *appsettings.json*.
-  * *appsettings.{Environment}.json*.
+  * `appsettings.json`.
+  * `appsettings.{Environment}.json`.
   * [User secrets](xref:security/app-secrets) when the app runs in the `Development` environment.
   * Environment variables.
   * Command-line arguments.
@@ -770,7 +658,7 @@ To set this value, use the environment variable or configure `HostOptions`. The 
 
 ### Disable app configuration reload on change
 
-By [default](xref:fundamentals/configuration/index#default), *appsettings.json* and *appsettings.{Environment}.json* are reloaded when the file changes. To disable this reload behavior in ASP.NET Core 5.0 or later, set the `hostBuilder:reloadConfigOnChange` key to `false`.
+By [default](xref:fundamentals/configuration/index#default), `appsettings.json` and `appsettings.{Environment}.json` are reloaded when the file changes. To disable this reload behavior in ASP.NET Core 5.0 or later, set the `hostBuilder:reloadConfigOnChange` key to `false`.
 
 **Key**: `hostBuilder:reloadConfigOnChange`  
 **Type**: `bool` (`true` or `false`)  
@@ -1131,8 +1019,8 @@ The <xref:Microsoft.Extensions.Hosting.Host.CreateDefaultBuilder%2A> method:
   * Environment variables prefixed with `DOTNET_`.
   * Command-line arguments.
 * Loads app configuration from:
-  * *appsettings.json*.
-  * *appsettings.{Environment}.json*.
+  * `appsettings.json`.
+  * `appsettings.{Environment}.json`.
   * [User secrets](xref:security/app-secrets) when the app runs in the `Development` environment.
   * Environment variables.
   * Command-line arguments.
